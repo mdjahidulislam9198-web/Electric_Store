@@ -26,8 +26,8 @@
 <h1>Apps Script connectivity test</h1>
 <p>Run this page from your real GitHub Pages address, on every device you plan to use.</p>
 
-<label for="url">Apps Script web app URL (ends in /exec)</label>
-<input id="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+<label for="url">Backend address (Apps Script /exec URL, or your Worker address)</label>
+<input id="url" placeholder="https://store-api.your-name.workers.dev" autocomplete="off">
 <button id="run">Run tests</button>
 <button id="copy" class="secondary">Copy report</button>
 
@@ -73,6 +73,13 @@ async function runAll() {
   $rows.innerHTML = ''; results.length = 0;
   document.getElementById('run').disabled = true;
 
+  // S0: can this device reach the address at all? (no-cors lets the request through even without CORS headers)
+  try {
+    await fetch(url(), { mode: 'no-cors', cache: 'no-store' });
+    add('S0 Address reachable', 'INFO', 'This device can reach the address. If S1 fails, the cause is browser CORS handling, not the network.');
+  } catch (e) {
+    add('S0 Address reachable', 'FAIL', 'This device cannot reach the address at all (wrong address, or the network blocks it).');
+  }
   await step('S1 JSON round trip', async () => {
     const r = await call('ping');
     return [r.body.ok ? 'PASS' : 'FAIL', `server time ${r.body.data && r.body.data.serverTime}`];
@@ -141,7 +148,7 @@ function report() {
 // ═══ SECTION: Wiring ═══
 const saved = localStorage.getItem('gasUrl'); if (saved) document.getElementById('url').value = saved;
 document.getElementById('run').onclick = () => {
-  if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url())) { alert('Paste the web app URL ending in /exec'); return; }
+  if (!/^https:\/\/.+/.test(url())) { alert('Paste a full https address: the Apps Script /exec URL, or your Worker address'); return; }
   localStorage.setItem('gasUrl', url()); runAll();
 };
 document.getElementById('copy').onclick = () => navigator.clipboard.writeText(document.getElementById('report').textContent);
