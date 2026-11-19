@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connectivity test</title>
+<style>
+  :root { --bg:#fff; --fg:#1b1f24; --muted:#5b6570; --line:#d5dae0; --ok:#0a7a3d; --bad:#b42318; --warn:#9a6700; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14181d; --fg:#e8ecf0; --muted:#9aa5b1; --line:#2d353e; --ok:#4cc38a; --bad:#ff8a80; --warn:#e3b341; }
+  }
+  body { font:16px/1.5 system-ui, sans-serif; background:var(--bg); color:var(--fg); max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.3rem; margin:.2em 0; }
+  p, label { color:var(--muted); }
+  input { width:100%; box-sizing:border-box; padding:10px; font:inherit; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  button { font:inherit; padding:10px 16px; margin:10px 8px 10px 0; border:1px solid var(--fg); border-radius:6px; background:var(--fg); color:var(--bg); cursor:pointer; }
+  button.secondary { background:transparent; color:var(--fg); }
+  button:disabled { opacity:.5; }
+  table { width:100%; border-collapse:collapse; margin-top:8px; }
+  td, th { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:top; font-size:.92rem; }
+  .PASS { color:var(--ok); font-weight:600; } .FAIL { color:var(--bad); font-weight:600; } .INFO { color:var(--warn); font-weight:600; }
+  pre { white-space:pre-wrap; word-break:break-word; font-size:.8rem; border:1px solid var(--line); padding:8px; border-radius:6px; }
+</style>
+</head>
+<body>
+<h1>Apps Script connectivity test</h1>
+<p>Run this page from your real GitHub Pages address, on every device you plan to use.</p>
+
+<label for="url">Apps Script web app URL (ends in /exec)</label>
+<input id="url" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+<button id="run">Run tests</button>
+<button id="copy" class="secondary">Copy report</button>
+
+<table><thead><tr><th>Test</th><th>Result</th><th>Details</th></tr></thead><tbody id="rows"></tbody></table>
+<h2 style="font-size:1rem">Report to send back</h2>
+<pre id="report">Not run yet.</pre>
+
+<script>
+// ═══ SECTION: Transport — this is the exact request format the real app will use ═══
+// WHAT:      POST, Content-Type text/plain (avoids the CORS preflight), JSON body, follow redirects,
+//            no cookies, no custom headers.
+// CUSTOMIZE: the real app's api/client.ts will wrap this same call.
+async function call(action, payload, requestKey) {
+  const t0 = performance.now();
+  const resp = await fetch(url(), {
+    method: 'POST',
+    redirect: 'follow',
+    credentials: 'omit',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action, payload: payload || {}, requestKey, apiVersion: 'spike-1' })
+  });
+  const body = await resp.json();                      // throws if an HTML error page came back
+  return { body, redirected: resp.redirected, ms: Math.round(performance.now() - t0) };
+}
+const url = () => document.getElementById('url').value.trim();
+const $rows = document.getElementById('rows');
+const results = [];
+
+function add(id, status, detail) {
+  results.push({ id, status, detail });
+  $rows.insertAdjacentHTML('beforeend',
+    `<tr><td>${id}</td><td class="${status}">${status}</td><td>${detail}</td></tr>`);
+}
+const checksum = s => { let h = 0; for (let i = 0; i < s.length; i += 97) h = (h * 31 + s.charCodeAt(i)) % 1000000007; return h; };
+const uid = () => 'k-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+async function step(id, fn) {
+  try { const r = await fn(); add(id, r[0], r[1]); }
+  catch (e) { add(id, 'FAIL', 'Browser error: ' + e.message + ' (this is what a CORS or network failure looks like)'); }
+}
+
+// ═══ SECTION: Tests S1–S7, S9 (S3, S8, S10 are manual — see README) ═══
+async function runAll() {
+  $rows.innerHTML = ''; results.length = 0;
+  document.getElementById('run').disabled = true;
+
+  await step('S1 JSON round trip', async () => {
+    const r = await call('ping');
+    return [r.body.ok ? 'PASS' : 'FAIL', `server time ${r.body.data && r.body.data.serverTime}`];
+  });
+  await step('S2 Redirect followed', async () => {
+    const r = await call('ping');
+    return [r.redirected ? 'PASS' : 'INFO', r.redirected ? 'response.redirected = true' : 'no redirect seen (fine if S1 passed)'];
+  });
+  add('S3 No preflight', 'INFO', 'Manual: open DevTools → Network and confirm there is no OPTIONS request. (Inferred OK if S1 passed.)');
+
+  await step('S4 Error returns JSON', async () => {
+    const r = await call('fail');
+    return [(!r.body.ok && r.body.code === 'TEST_FAILURE') ? 'PASS' : 'FAIL', JSON.stringify(r.body)];
+  });
+  await step('S5 Large payloads (300 KB)', async () => {
+    const data = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'.repeat(4800).slice(0, 307200);
+    const up = await call('bigRequest', { data });
+    const down = await call('bigResponse', { kb: 300 });
+    const upOk = up.body.ok && up.body.data.receivedLength === data.length && up.body.data.checksum === checksum(data);
+    const dn = down.body.data;
+    const downOk = down.body.ok && dn.data.length === dn.length && checksum(dn.data) === dn.checksum;
+    return [upOk && downOk ? 'PASS' : 'FAIL', `upload ${upOk ? 'ok' : 'BAD'} (${up.ms} ms), download ${downOk ? 'ok' : 'BAD'} (${down.ms} ms)`];
+  });
+  await step('S6 Latency (20 calls)', async () => {
+    const t = []; for (let i = 0; i < 20; i++) t.push((await call('ping')).ms);
+    const s = [...t].sort((a, b) => a - b), med = s[9], p95 = s[18];
+    return [med <= 3000 && p95 <= 8000 ? 'PASS' : 'FAIL', `median ${med} ms, slowest-5% ${p95} ms (limits 3000 / 8000). First call: ${t[0]} ms`];
+  });
+  await step('S7 Concurrent writes + duplicate key', async () => {
+    await call('resetTest');
+    const keys = [1, 2, 3, 4, 5].map(uid), dup = uid();
+    const all = await Promise.all([...keys.map(k => call('lockedWrite', {}, k)), call('lockedWrite', {}, dup), call('lockedWrite', {}, dup)]);
+    const bad = all.filter(r => !r.body.ok);
+    if (bad.length) return ['FAIL', 'Errors: ' + bad.map(r => r.body.code).join(', ')];
+    const seqs = all.slice(0, 5).map(r => r.body.data.seq), d1 = all[5].body.data, d2 = all[6].body.data;
+    const unique = new Set(seqs).size === 5, sameDup = d1.seq === d2.seq, oneNew = d1.duplicate !== d2.duplicate;
+    return [unique && sameDup && oneNew ? 'PASS' : 'FAIL', `seqs ${seqs.join(',')}; duplicate key → seq ${d1.seq}/${d2.seq}`];
+  });
+
+  // S9: password hashing speed in THIS browser (PBKDF2-SHA256, 600,000 iterations, OWASP 2023)
+  await step('S9 Browser PBKDF2 (600k)', async () => {
+    if (!(window.crypto && crypto.subtle)) return ['FAIL', 'Web Crypto unavailable (page must be https)'];
+    const t0 = performance.now();
+    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('test-password'), 'PBKDF2', false, ['deriveBits']);
+    await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: new TextEncoder().encode('0123456789abcdef'), iterations: 600000 }, key, 256);
+    const ms = Math.round(performance.now() - t0);
+    return [ms <= 3000 ? 'PASS' : 'FAIL', `${ms} ms (limit 3000)`];
+  });
+  await step('S9 Server HMAC speed (info)', async () => {
+    const r = await call('serverBench');
+    const d = r.body.data;
+    return ['INFO', `${d.iterations} HMACs took ${d.ms} ms → 600k would take about ${Math.round(d.projectedMsFor600k / 1000)} s on the server, which is why hashing is done in the browser`];
+  });
+
+  add('S8 Device', 'INFO', `${navigator.userAgent} | page origin ${location.origin}`);
+  add('S10 Redeploy URL', 'INFO', 'Manual: redeploy as a NEW VERSION and confirm the /exec URL is unchanged.');
+
+  report(); document.getElementById('run').disabled = false;
+}
+
+function report() {
+  document.getElementById('report').textContent =
+    results.map(r => `${r.id}: ${r.status} — ${r.detail.replace(/<[^>]+>/g, '')}`).join('\n');
+}
+
+// ═══ SECTION: Wiring ═══
+const saved = localStorage.getItem('gasUrl'); if (saved) document.getElementById('url').value = saved;
+document.getElementById('run').onclick = () => {
+  if (!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(url())) { alert('Paste the web app URL ending in /exec'); return; }
+  localStorage.setItem('gasUrl', url()); runAll();
+};
+document.getElementById('copy').onclick = () => navigator.clipboard.writeText(document.getElementById('report').textContent);
+</script>
+</body>
+</html>
